@@ -1,10 +1,11 @@
 import { Link } from "react-router";
+import { useState, useEffect } from "react";
 import type { Route } from "./+types/home";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { buildCourseQuery, getLessonCountForCourse, getAllCategories } from "~/services/courseService";
 import { CourseStatus } from "~/db/schema";
-import { BookOpen, GraduationCap, Users, ArrowRight, User } from "lucide-react";
+import { BookOpen, GraduationCap, Users, ArrowRight, User, Moon, Sun } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 
 export function meta({}: Route.MetaArgs) {
@@ -31,6 +32,20 @@ export function loader() {
 
 export default function Home({ loaderData }: Route.ComponentProps) {
   const { featuredCourses, totalCourses, totalCategories } = loaderData;
+  const [isDark, setIsDark] = useState(false);
+
+  useEffect(() => {
+    setIsDark(document.documentElement.classList.contains("dark"));
+  }, []);
+
+  function toggleDarkMode() {
+    const next = !isDark;
+    setIsDark(next);
+    document.documentElement.classList.toggle("dark", next);
+    try {
+      localStorage.setItem("ralph-theme", next ? "dark" : "light");
+    } catch {}
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -46,6 +61,13 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             >
               Courses
             </Link>
+            <button
+              onClick={toggleDarkMode}
+              className="rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground"
+              title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            </button>
             <Button asChild size="sm">
               <Link to="/courses">Get Started</Link>
             </Button>
