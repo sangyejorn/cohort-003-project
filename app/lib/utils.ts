@@ -5,6 +5,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Format a price in cents to a display string.
+ * 0 or null/undefined → "Free", otherwise "$X.XX".
+ */
+export function formatPrice(cents: number | null | undefined): string {
+  if (!cents) return "Free";
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 // Deliberate wart per PRD User Story 95 — positional boolean parameters
 export function formatDuration(
   minutes: number,

@@ -14,6 +14,7 @@ import {
   updateCourse,
   updateCourseStatus,
   updateCourseSalesCopy,
+  updateCoursePrice,
   getLessonCountForCourse,
 } from "~/services/courseService";
 import {
@@ -35,7 +36,7 @@ import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { CourseStatus, UserRole } from "~/db/schema";
-import { formatDuration } from "~/lib/utils";
+import { formatDuration, formatPrice } from "~/lib/utils";
 import { MonacoMarkdownEditor } from "~/components/monaco-markdown-editor";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -169,6 +170,20 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
     updateCourseStatus(courseId, status);
     return { success: true, field: "status" };
+  }
+
+  if (intent === "update-price") {
+    const priceStr = formData.get("price") as string;
+    const priceDollars = parseFloat(priceStr);
+    if (isNaN(priceDollars) || priceDollars < 0) {
+      return data({ error: "Price must be a non-negative number." }, { status: 400 });
+    }
+    if (priceDollars > 9999.99) {
+      return data({ error: "Price cannot exceed $9,999.99." }, { status: 400 });
+    }
+    const priceCents = Math.round(priceDollars * 100);
+    updateCoursePrice(courseId, priceCents);
+    return { success: true, field: "price" };
   }
 
   if (intent === "add-module") {
@@ -952,6 +967,7 @@ export default function InstructorCourseEditor({
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
   const salesCopyFetcher = useFetcher();
+  const priceFetcher = useFetcher();
 
   const [salesCopy, setSalesCopy] = useState(course.salesCopy ?? "");
   const salesCopyHasChanges = salesCopy !== (course.salesCopy ?? "");
@@ -991,6 +1007,15 @@ export default function InstructorCourseEditor({
       toast.error(salesCopyFetcher.data.error);
     }
   }, [salesCopyFetcher.state, salesCopyFetcher.data]);
+
+  useEffect(() => {
+    if (priceFetcher.state === "idle" && priceFetcher.data?.success) {
+      toast.success("Price updated.");
+    }
+    if (priceFetcher.state === "idle" && priceFetcher.data?.error) {
+      toast.error(priceFetcher.data.error);
+    }
+  }, [priceFetcher.state, priceFetcher.data]);
 
   function handleSalesCopySave() {
     salesCopyFetcher.submit(
@@ -1138,6 +1163,35 @@ export default function InstructorCourseEditor({
               </SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Price:</span>
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">$</span>
+            <Input
+              type="number"
+              min="0"
+              max="9999.99"
+              step="0.01"
+              defaultValue={(course.price / 100).toFixed(2)}
+              className="w-28"
+              onBlur={(e) => {
+                const val = parseFloat(e.target.value);
+                if (!isNaN(val) && val >= 0 && Math.round(val * 100) !== course.price) {
+                  priceFetcher.submit(
+                    { intent: "update-price", price: e.target.value },
+                    { method: "post" }
+                  );
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+          </div>
         </div>
 
         <Link to={`/courses/${course.slug}`}>

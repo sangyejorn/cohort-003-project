@@ -79,6 +79,7 @@ export function buildCourseQuery(
       categoryId: courses.categoryId,
       status: courses.status,
       coverImageUrl: courses.coverImageUrl,
+      price: courses.price,
       createdAt: courses.createdAt,
       updatedAt: courses.updatedAt,
       instructorName: users.name,
@@ -119,6 +120,7 @@ export function getCourseWithDetails(id: number) {
       categoryId: courses.categoryId,
       status: courses.status,
       coverImageUrl: courses.coverImageUrl,
+      price: courses.price,
       createdAt: courses.createdAt,
       updatedAt: courses.updatedAt,
       instructorName: users.name,
@@ -234,6 +236,15 @@ export function updateCourseSalesCopy(id: number, salesCopy: string | null) {
   return db
     .update(courses)
     .set({ salesCopy, updatedAt: new Date().toISOString() })
+    .where(eq(courses.id, id))
+    .returning()
+    .get();
+}
+
+export function updateCoursePrice(id: number, price: number) {
+  return db
+    .update(courses)
+    .set({ price, updatedAt: new Date().toISOString() })
     .where(eq(courses.id, id))
     .returning()
     .get();
