@@ -78,9 +78,23 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             >
               {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </button>
-            <Button asChild size="sm">
-              <Link to="/courses">Get Started</Link>
-            </Button>
+            {currentUser ? (
+              <Button asChild size="sm">
+                <Link to="/dashboard">Dashboard</Link>
+              </Button>
+            ) : (
+              <>
+                <Link
+                  to="/login"
+                  className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Log In
+                </Link>
+                <Button asChild size="sm">
+                  <Link to="/signup">Sign Up</Link>
+                </Button>
+              </>
+            )}
           </nav>
         </div>
       </header>
