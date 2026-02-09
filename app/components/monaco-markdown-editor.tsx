@@ -1,5 +1,5 @@
-import { useRef, useCallback } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import { useRef, useCallback, useState, useEffect, type ComponentType } from "react";
+import type { EditorProps, OnMount } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 
 interface MonacoMarkdownEditorProps {
@@ -18,6 +18,14 @@ export function MonacoMarkdownEditor({
   const onSaveRef = useRef(onSave);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+
+  const [Editor, setEditor] = useState<ComponentType<EditorProps> | null>(null);
+
+  useEffect(() => {
+    import("@monaco-editor/react").then((mod) => {
+      setEditor(() => mod.default);
+    });
+  }, []);
 
   const handleMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
@@ -80,6 +88,15 @@ export function MonacoMarkdownEditor({
       }
     );
   }, []);
+
+  if (!Editor) {
+    return (
+      <div
+        className="overflow-hidden rounded-md border border-input"
+        style={{ height: "500px" }}
+      />
+    );
+  }
 
   return (
     <div className="overflow-hidden rounded-md border border-input">
