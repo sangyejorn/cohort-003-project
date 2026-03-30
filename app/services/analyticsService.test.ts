@@ -17,6 +17,8 @@ import {
   getCompletionAnalytics,
   getTotalEnrollmentCount,
   getCompletionRate,
+  getQuizAnalytics,
+  getDropoffAnalytics,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -575,6 +577,725 @@ describe("analyticsService", () => {
         .run();
 
       expect(getCompletionRate(base.course.id)).toBe(50);
+    });
+  });
+
+  describe("getQuizAnalytics", () => {
+    function createQuizWithQuestions(
+      testDb: ReturnType<typeof createTestDb>,
+      base: ReturnType<typeof seedBaseData>
+    ) {
+      const mod = testDb
+        .insert(schema.modules)
+        .values({
+          courseId: base.course.id,
+          title: "Module 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      const lesson = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Lesson 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      const quiz = testDb
+        .insert(schema.quizzes)
+        .values({
+          lessonId: lesson.id,
+          title: "Quiz 1",
+          passingScore: 0.7,
+        })
+        .returning()
+        .get();
+
+      const q1 = testDb
+        .insert(schema.quizQuestions)
+        .values({
+          quizId: quiz.id,
+          questionText: "What is 1+1?",
+          questionType: schema.QuestionType.MultipleChoice,
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      const q1Correct = testDb
+        .insert(schema.quizOptions)
+        .values({
+          questionId: q1.id,
+          optionText: "2",
+          isCorrect: true,
+        })
+        .returning()
+        .get();
+
+      const q1Wrong = testDb
+        .insert(schema.quizOptions)
+        .values({
+          questionId: q1.id,
+          optionText: "3",
+          isCorrect: false,
+        })
+        .returning()
+        .get();
+
+      const q2 = testDb
+        .insert(schema.quizQuestions)
+        .values({
+          quizId: quiz.id,
+          questionText: "What is 2+2?",
+          questionType: schema.QuestionType.MultipleChoice,
+          position: 2,
+        })
+        .returning()
+        .get();
+
+      const q2Correct = testDb
+        .insert(schema.quizOptions)
+        .values({
+          questionId: q2.id,
+          optionText: "4",
+          isCorrect: true,
+        })
+        .returning()
+        .get();
+
+      const q2Wrong = testDb
+        .insert(schema.quizOptions)
+        .values({
+          questionId: q2.id,
+          optionText: "5",
+          isCorrect: false,
+        })
+        .returning()
+        .get();
+
+      return {
+        mod,
+        lesson,
+        quiz,
+        q1,
+        q1Correct,
+        q1Wrong,
+        q2,
+        q2Correct,
+        q2Wrong,
+      };
+    }
+
+    it("returns empty data when course has no quizzes", () => {
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.quizzes).toHaveLength(0);
+      expect(result.passRate).toBe(0);
+      expect(result.totalAttempts).toBe(0);
+      expect(result.questionIncorrectRates).toHaveLength(0);
+      expect(result.scoreDistribution).toHaveLength(10);
+      expect(result.scoreDistribution.every((b) => b.count === 0)).toBe(true);
+      expect(result.monthlyAttempts).toHaveLength(0);
+      expect(result.averageScore).toBe(0);
+    });
+
+    it("returns quiz list for a course", () => {
+      createQuizWithQuestions(testDb, base);
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.quizzes).toHaveLength(1);
+      expect(result.quizzes[0].quizTitle).toBe("Quiz 1");
+    });
+
+    it("returns zero rates when quiz has no attempts", () => {
+      createQuizWithQuestions(testDb, base);
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.passRate).toBe(0);
+      expect(result.totalAttempts).toBe(0);
+      expect(result.averageScore).toBe(0);
+      expect(result.questionIncorrectRates).toHaveLength(2);
+      expect(result.questionIncorrectRates[0].totalAnswers).toBe(0);
+      expect(result.questionIncorrectRates[0].incorrectRate).toBe(0);
+    });
+
+    it("calculates pass rate correctly", () => {
+      const { quiz } = createQuizWithQuestions(testDb, base);
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values([
+          {
+            userId: base.user.id,
+            quizId: quiz.id,
+            score: 1.0,
+            passed: true,
+            attemptedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            quizId: quiz.id,
+            score: 0.5,
+            passed: false,
+            attemptedAt: "2025-06-16T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.passRate).toBe(50);
+      expect(result.totalAttempts).toBe(2);
+    });
+
+    it("calculates 100% pass rate when all pass", () => {
+      const { quiz } = createQuizWithQuestions(testDb, base);
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values({
+          userId: base.user.id,
+          quizId: quiz.id,
+          score: 1.0,
+          passed: true,
+          attemptedAt: "2025-06-15T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.passRate).toBe(100);
+    });
+
+    it("calculates per-question incorrect rates", () => {
+      const { quiz, q1, q1Correct, q1Wrong, q2, q2Correct } =
+        createQuizWithQuestions(testDb, base);
+
+      // Attempt 1: gets q1 wrong, q2 right
+      const attempt1 = testDb
+        .insert(schema.quizAttempts)
+        .values({
+          userId: base.user.id,
+          quizId: quiz.id,
+          score: 0.5,
+          passed: false,
+          attemptedAt: "2025-06-15T10:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.quizAnswers)
+        .values([
+          {
+            attemptId: attempt1.id,
+            questionId: q1.id,
+            selectedOptionId: q1Wrong.id,
+          },
+          {
+            attemptId: attempt1.id,
+            questionId: q2.id,
+            selectedOptionId: q2Correct.id,
+          },
+        ])
+        .run();
+
+      // Attempt 2: gets both right
+      const attempt2 = testDb
+        .insert(schema.quizAttempts)
+        .values({
+          userId: base.instructor.id,
+          quizId: quiz.id,
+          score: 1.0,
+          passed: true,
+          attemptedAt: "2025-06-16T10:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.quizAnswers)
+        .values([
+          {
+            attemptId: attempt2.id,
+            questionId: q1.id,
+            selectedOptionId: q1Correct.id,
+          },
+          {
+            attemptId: attempt2.id,
+            questionId: q2.id,
+            selectedOptionId: q2Correct.id,
+          },
+        ])
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.questionIncorrectRates).toHaveLength(2);
+      // Q1: 1 incorrect out of 2 = 50%
+      expect(result.questionIncorrectRates[0].incorrectRate).toBe(50);
+      expect(result.questionIncorrectRates[0].totalAnswers).toBe(2);
+      // Q2: 0 incorrect out of 2 = 0%
+      expect(result.questionIncorrectRates[1].incorrectRate).toBe(0);
+    });
+
+    it("calculates score distribution buckets", () => {
+      const { quiz } = createQuizWithQuestions(testDb, base);
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "User 2",
+          email: "user2@example.com",
+          role: schema.UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values([
+          {
+            userId: base.user.id,
+            quizId: quiz.id,
+            score: 0.95,
+            passed: true,
+            attemptedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            quizId: quiz.id,
+            score: 0.45,
+            passed: false,
+            attemptedAt: "2025-06-16T10:00:00.000Z",
+          },
+          {
+            userId: user2.id,
+            quizId: quiz.id,
+            score: 1.0,
+            passed: true,
+            attemptedAt: "2025-06-17T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      // score 0.95 -> bucket 9 (90-100%), score 0.45 -> bucket 4 (40-50%), score 1.0 -> bucket 9
+      expect(result.scoreDistribution[4].count).toBe(1); // 40-50%
+      expect(result.scoreDistribution[9].count).toBe(2); // 90-100%
+    });
+
+    it("calculates monthly attempt trends", () => {
+      const { quiz } = createQuizWithQuestions(testDb, base);
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values([
+          {
+            userId: base.user.id,
+            quizId: quiz.id,
+            score: 0.8,
+            passed: true,
+            attemptedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            quizId: quiz.id,
+            score: 0.5,
+            passed: false,
+            attemptedAt: "2025-06-20T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            quizId: quiz.id,
+            score: 0.9,
+            passed: true,
+            attemptedAt: "2025-07-10T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      expect(result.monthlyAttempts).toHaveLength(2);
+      expect(result.monthlyAttempts[0]).toEqual({
+        month: "2025-06",
+        attempts: 2,
+      });
+      expect(result.monthlyAttempts[1]).toEqual({
+        month: "2025-07",
+        attempts: 1,
+      });
+    });
+
+    it("calculates average score correctly", () => {
+      const { quiz } = createQuizWithQuestions(testDb, base);
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values([
+          {
+            userId: base.user.id,
+            quizId: quiz.id,
+            score: 0.8,
+            passed: true,
+            attemptedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            quizId: quiz.id,
+            score: 0.6,
+            passed: false,
+            attemptedAt: "2025-06-16T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getQuizAnalytics(base.course.id);
+
+      // (0.8 + 0.6) / 2 = 0.7 -> 70%
+      expect(result.averageScore).toBe(70);
+    });
+
+    it("filters by specific quizId when provided", () => {
+      const { mod, lesson } = createQuizWithQuestions(testDb, base);
+
+      const lesson2 = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Lesson 2",
+          position: 2,
+        })
+        .returning()
+        .get();
+
+      const quiz2 = testDb
+        .insert(schema.quizzes)
+        .values({
+          lessonId: lesson2.id,
+          title: "Quiz 2",
+          passingScore: 0.7,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.quizAttempts)
+        .values({
+          userId: base.user.id,
+          quizId: quiz2.id,
+          score: 0.3,
+          passed: false,
+          attemptedAt: "2025-06-15T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getQuizAnalytics(base.course.id, quiz2.id);
+
+      expect(result.quizzes).toHaveLength(2);
+      expect(result.totalAttempts).toBe(1);
+      expect(result.passRate).toBe(0);
+      expect(result.averageScore).toBe(30);
+    });
+  });
+
+  describe("getDropoffAnalytics", () => {
+    function createCourseStructure(
+      testDb: ReturnType<typeof createTestDb>,
+      base: ReturnType<typeof seedBaseData>
+    ) {
+      const mod1 = testDb
+        .insert(schema.modules)
+        .values({
+          courseId: base.course.id,
+          title: "Module 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      const lesson1 = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod1.id,
+          title: "Lesson 1",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      const lesson2 = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod1.id,
+          title: "Lesson 2",
+          position: 2,
+        })
+        .returning()
+        .get();
+
+      const mod2 = testDb
+        .insert(schema.modules)
+        .values({
+          courseId: base.course.id,
+          title: "Module 2",
+          position: 2,
+        })
+        .returning()
+        .get();
+
+      const lesson3 = testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: mod2.id,
+          title: "Lesson 3",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      return { mod1, mod2, lesson1, lesson2, lesson3 };
+    }
+
+    it("returns empty data when course has no lessons", () => {
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.totalEnrolled).toBe(0);
+      expect(result.lessons).toHaveLength(0);
+    });
+
+    it("returns 0% completion when no enrollments exist", () => {
+      createCourseStructure(testDb, base);
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.totalEnrolled).toBe(0);
+      expect(result.lessons).toHaveLength(3);
+      expect(result.lessons.every((l) => l.completedPercent === 0)).toBe(true);
+    });
+
+    it("returns lessons ordered by module position then lesson position", () => {
+      createCourseStructure(testDb, base);
+
+      testDb
+        .insert(schema.enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+        })
+        .run();
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.lessons).toHaveLength(3);
+      expect(result.lessons[0].lessonTitle).toBe("Lesson 1");
+      expect(result.lessons[0].moduleTitle).toBe("Module 1");
+      expect(result.lessons[0].position).toBe(1);
+      expect(result.lessons[1].lessonTitle).toBe("Lesson 2");
+      expect(result.lessons[1].position).toBe(2);
+      expect(result.lessons[2].lessonTitle).toBe("Lesson 3");
+      expect(result.lessons[2].moduleTitle).toBe("Module 2");
+      expect(result.lessons[2].position).toBe(3);
+    });
+
+    it("calculates correct completion percentages", () => {
+      const { lesson1, lesson2, lesson3 } = createCourseStructure(
+        testDb,
+        base
+      );
+
+      const user2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "User 2",
+          email: "user2@example.com",
+          role: schema.UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      // 2 enrolled students
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          { userId: base.user.id, courseId: base.course.id },
+          { userId: user2.id, courseId: base.course.id },
+        ])
+        .run();
+
+      // Both complete lesson 1
+      testDb
+        .insert(schema.lessonProgress)
+        .values([
+          {
+            userId: base.user.id,
+            lessonId: lesson1.id,
+            status: schema.LessonProgressStatus.Completed,
+            completedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: user2.id,
+            lessonId: lesson1.id,
+            status: schema.LessonProgressStatus.Completed,
+            completedAt: "2025-06-16T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      // Only user1 completes lesson 2
+      testDb
+        .insert(schema.lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lesson2.id,
+          status: schema.LessonProgressStatus.Completed,
+          completedAt: "2025-06-17T10:00:00.000Z",
+        })
+        .run();
+
+      // No one completes lesson 3
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.totalEnrolled).toBe(2);
+      expect(result.lessons[0].completedCount).toBe(2);
+      expect(result.lessons[0].completedPercent).toBe(100);
+      expect(result.lessons[1].completedCount).toBe(1);
+      expect(result.lessons[1].completedPercent).toBe(50);
+      expect(result.lessons[2].completedCount).toBe(0);
+      expect(result.lessons[2].completedPercent).toBe(0);
+    });
+
+    it("returns 100% when all students complete all lessons", () => {
+      const { lesson1 } = createCourseStructure(testDb, base);
+
+      testDb
+        .insert(schema.enrollments)
+        .values({ userId: base.user.id, courseId: base.course.id })
+        .run();
+
+      testDb
+        .insert(schema.lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lesson1.id,
+          status: schema.LessonProgressStatus.Completed,
+          completedAt: "2025-06-15T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.lessons[0].completedPercent).toBe(100);
+    });
+
+    it("only counts enrolled users' progress", () => {
+      const { lesson1 } = createCourseStructure(testDb, base);
+
+      // Only user is enrolled
+      testDb
+        .insert(schema.enrollments)
+        .values({ userId: base.user.id, courseId: base.course.id })
+        .run();
+
+      // Instructor has progress but is not enrolled
+      testDb
+        .insert(schema.lessonProgress)
+        .values([
+          {
+            userId: base.user.id,
+            lessonId: lesson1.id,
+            status: schema.LessonProgressStatus.Completed,
+            completedAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            lessonId: lesson1.id,
+            status: schema.LessonProgressStatus.Completed,
+            completedAt: "2025-06-16T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.totalEnrolled).toBe(1);
+      expect(result.lessons[0].completedCount).toBe(1);
+      expect(result.lessons[0].completedPercent).toBe(100);
+    });
+
+    it("does not count in_progress as completed", () => {
+      const { lesson1 } = createCourseStructure(testDb, base);
+
+      testDb
+        .insert(schema.enrollments)
+        .values({ userId: base.user.id, courseId: base.course.id })
+        .run();
+
+      testDb
+        .insert(schema.lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lesson1.id,
+          status: schema.LessonProgressStatus.InProgress,
+        })
+        .run();
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.lessons[0].completedCount).toBe(0);
+      expect(result.lessons[0].completedPercent).toBe(0);
+    });
+
+    it("does not include lessons from other courses", () => {
+      createCourseStructure(testDb, base);
+
+      const otherCourse = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course",
+          description: "Another course",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      const otherMod = testDb
+        .insert(schema.modules)
+        .values({
+          courseId: otherCourse.id,
+          title: "Other Module",
+          position: 1,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.lessons)
+        .values({
+          moduleId: otherMod.id,
+          title: "Other Lesson",
+          position: 1,
+        })
+        .run();
+
+      const result = getDropoffAnalytics(base.course.id);
+
+      expect(result.lessons).toHaveLength(3);
+      expect(result.lessons.every((l) => l.moduleTitle !== "Other Module")).toBe(
+        true
+      );
     });
   });
 });

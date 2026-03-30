@@ -10,17 +10,23 @@ import {
   getRevenueAnalytics,
   getEnrollmentAnalytics,
   getCompletionAnalytics,
+  getQuizAnalytics,
+  getDropoffAnalytics,
 } from "~/services/analyticsService";
 import {
   exportRevenueCsv,
   exportEnrollmentCsv,
   exportCompletionCsv,
+  exportQuizCsv,
+  exportDropoffCsv,
 } from "~/services/csvExportService";
 import { UserRole } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
 import { RevenueChart } from "~/components/analytics/RevenueChart";
 import { EnrollmentChart } from "~/components/analytics/EnrollmentChart";
 import { CompletionChart } from "~/components/analytics/CompletionChart";
+import { QuizAnalyticsPanel } from "~/components/analytics/QuizAnalyticsPanel";
+import { DropoffFunnel } from "~/components/analytics/DropoffFunnel";
 import { StatCard } from "~/components/analytics/StatCard";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -112,6 +118,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const enrollmentData = getEnrollmentAnalytics(courseId, dateRange);
   const completionData = getCompletionAnalytics(courseId);
 
+  const quizIdParam = url.searchParams.get("quizId");
+  const selectedQuizId = quizIdParam ? Number(quizIdParam) : undefined;
+  const quizData = getQuizAnalytics(courseId, selectedQuizId);
+  const dropoffData = getDropoffAnalytics(courseId);
+
   return {
     course,
     tab,
@@ -119,7 +130,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     revenueData,
     enrollmentData,
     completionData,
-    averageQuizScore: null as number | null, // placeholder for Phase 3
+    quizData,
+    dropoffData,
+    selectedQuizId: selectedQuizId ?? null,
+    averageQuizScore: quizData.averageScore,
   };
 }
 
@@ -189,6 +203,30 @@ export async function action({ params, request }: Route.ActionArgs) {
     });
   }
 
+  if (exportTab === "quizzes") {
+    const quizIdStr = formData.get("quizId") as string;
+    const quizIdNum = quizIdStr ? Number(quizIdStr) : undefined;
+    const quizData = getQuizAnalytics(courseId, quizIdNum);
+    const csv = exportQuizCsv(quizData);
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv",
+        "Content-Disposition": `attachment; filename="quiz-${courseId}.csv"`,
+      },
+    });
+  }
+
+  if (exportTab === "drop-off") {
+    const dropoffData = getDropoffAnalytics(courseId);
+    const csv = exportDropoffCsv(dropoffData);
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv",
+        "Content-Disposition": `attachment; filename="dropoff-${courseId}.csv"`,
+      },
+    });
+  }
+
   throw data("Export not available for this tab.", { status: 400 });
 }
 
@@ -202,6 +240,9 @@ export default function AnalyticsDashboard({
     revenueData,
     enrollmentData,
     completionData,
+    quizData,
+    dropoffData,
+    selectedQuizId,
     averageQuizScore,
   } = loaderData;
 
@@ -222,6 +263,13 @@ export default function AnalyticsDashboard({
   function handleDateChange(field: "start" | "end", value: string) {
     setSearchParams((prev) => {
       prev.set(field, value);
+      return prev;
+    });
+  }
+
+  function handleQuizChange(quizId: string) {
+    setSearchParams((prev) => {
+      prev.set("quizId", quizId);
       return prev;
     });
   }
@@ -310,6 +358,9 @@ export default function AnalyticsDashboard({
             <input type="hidden" name="exportTab" value={activeTab} />
             <input type="hidden" name="start" value={startMonth} />
             <input type="hidden" name="end" value={endMonth} />
+            {selectedQuizId && (
+              <input type="hidden" name="quizId" value={selectedQuizId} />
+            )}
             <Button type="submit" variant="outline" size="sm">
               <Download className="mr-1.5 size-4" />
               Export CSV
@@ -415,17 +466,23 @@ export default function AnalyticsDashboard({
         </TabsContent>
 
         <TabsContent value="quizzes" className="mt-6">
-          <Card>
-            <CardContent className="flex h-64 items-center justify-center text-muted-foreground">
-              Quiz analytics coming soon.
-            </CardContent>
-          </Card>
+          <QuizAnalyticsPanel
+            data={quizData}
+            selectedQuizId={selectedQuizId}
+            onQuizChange={handleQuizChange}
+          />
         </TabsContent>
 
         <TabsContent value="drop-off" className="mt-6">
           <Card>
-            <CardContent className="flex h-64 items-center justify-center text-muted-foreground">
-              Drop-off analytics coming soon.
+            <CardHeader>
+              <h2 className="text-lg font-semibold">Lesson Drop-off Funnel</h2>
+              <p className="text-sm text-muted-foreground">
+                Percentage of enrolled students who completed each lesson
+              </p>
+            </CardHeader>
+            <CardContent>
+              <DropoffFunnel data={dropoffData} />
             </CardContent>
           </Card>
         </TabsContent>
