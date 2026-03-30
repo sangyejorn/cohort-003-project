@@ -8,13 +8,19 @@ import { getUserById } from "~/services/userService";
 import { getCourseById } from "~/services/courseService";
 import {
   getRevenueAnalytics,
-  getTotalEnrollmentCount,
-  getCompletionRate,
+  getEnrollmentAnalytics,
+  getCompletionAnalytics,
 } from "~/services/analyticsService";
-import { exportRevenueCsv } from "~/services/csvExportService";
+import {
+  exportRevenueCsv,
+  exportEnrollmentCsv,
+  exportCompletionCsv,
+} from "~/services/csvExportService";
 import { UserRole } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
 import { RevenueChart } from "~/components/analytics/RevenueChart";
+import { EnrollmentChart } from "~/components/analytics/EnrollmentChart";
+import { CompletionChart } from "~/components/analytics/CompletionChart";
 import { StatCard } from "~/components/analytics/StatCard";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -103,16 +109,16 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   };
 
   const revenueData = getRevenueAnalytics(courseId, dateRange);
-  const totalStudents = getTotalEnrollmentCount(courseId);
-  const completionRate = getCompletionRate(courseId);
+  const enrollmentData = getEnrollmentAnalytics(courseId, dateRange);
+  const completionData = getCompletionAnalytics(courseId);
 
   return {
     course,
     tab,
     dateRange,
     revenueData,
-    totalStudents,
-    completionRate,
+    enrollmentData,
+    completionData,
     averageQuizScore: null as number | null, // placeholder for Phase 3
   };
 }
@@ -161,6 +167,28 @@ export async function action({ params, request }: Route.ActionArgs) {
     });
   }
 
+  if (exportTab === "enrollment") {
+    const enrollmentData = getEnrollmentAnalytics(courseId, dateRange);
+    const csv = exportEnrollmentCsv(enrollmentData);
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv",
+        "Content-Disposition": `attachment; filename="enrollment-${courseId}.csv"`,
+      },
+    });
+  }
+
+  if (exportTab === "completion") {
+    const completionData = getCompletionAnalytics(courseId);
+    const csv = exportCompletionCsv(completionData);
+    return new Response(csv, {
+      headers: {
+        "Content-Type": "text/csv",
+        "Content-Disposition": `attachment; filename="completion-${courseId}.csv"`,
+      },
+    });
+  }
+
   throw data("Export not available for this tab.", { status: 400 });
 }
 
@@ -172,8 +200,8 @@ export default function AnalyticsDashboard({
     tab,
     dateRange,
     revenueData,
-    totalStudents,
-    completionRate,
+    enrollmentData,
+    completionData,
     averageQuizScore,
   } = loaderData;
 
@@ -237,12 +265,12 @@ export default function AnalyticsDashboard({
         />
         <StatCard
           label="Total Students"
-          value={String(totalStudents)}
+          value={String(enrollmentData.totalEnrollments)}
           icon={<Users className="size-5" />}
         />
         <StatCard
           label="Completion Rate"
-          value={`${completionRate}%`}
+          value={`${completionData.completionRate}%`}
           icon={<Award className="size-5" />}
         />
         <StatCard
@@ -343,16 +371,45 @@ export default function AnalyticsDashboard({
 
         <TabsContent value="enrollment" className="mt-6">
           <Card>
-            <CardContent className="flex h-64 items-center justify-center text-muted-foreground">
-              Enrollment analytics coming soon.
+            <CardHeader>
+              <h2 className="text-lg font-semibold">Monthly Enrollments</h2>
+              <p className="text-sm text-muted-foreground">
+                New enrollments per month with cumulative total
+              </p>
+            </CardHeader>
+            <CardContent>
+              <EnrollmentChart data={enrollmentData.monthlyEnrollments} />
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="completion" className="mt-6">
+          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <StatCard
+              label="Completion Rate"
+              value={`${completionData.completionRate}%`}
+              icon={<Award className="size-5" />}
+            />
+            <StatCard
+              label="Total Completed"
+              value={String(completionData.totalCompleted)}
+              icon={<CheckCircle className="size-5" />}
+            />
+            <StatCard
+              label="Total Enrolled"
+              value={String(completionData.totalEnrolled)}
+              icon={<Users className="size-5" />}
+            />
+          </div>
           <Card>
-            <CardContent className="flex h-64 items-center justify-center text-muted-foreground">
-              Completion analytics coming soon.
+            <CardHeader>
+              <h2 className="text-lg font-semibold">Completions Over Time</h2>
+              <p className="text-sm text-muted-foreground">
+                Monthly course completions with cumulative total
+              </p>
+            </CardHeader>
+            <CardContent>
+              <CompletionChart data={completionData.monthlyCompletions} />
             </CardContent>
           </Card>
         </TabsContent>

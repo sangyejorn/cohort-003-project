@@ -13,6 +13,8 @@ vi.mock("~/db", () => ({
 
 import {
   getRevenueAnalytics,
+  getEnrollmentAnalytics,
+  getCompletionAnalytics,
   getTotalEnrollmentCount,
   getCompletionRate,
 } from "./analyticsService";
@@ -212,6 +214,323 @@ describe("analyticsService", () => {
         .run();
 
       expect(getTotalEnrollmentCount(base.course.id)).toBe(2);
+    });
+  });
+
+  describe("getEnrollmentAnalytics", () => {
+    it("returns empty data when there are no enrollments", () => {
+      const result = getEnrollmentAnalytics(base.course.id);
+
+      expect(result.totalEnrollments).toBe(0);
+      expect(result.monthlyEnrollments).toHaveLength(0);
+    });
+
+    it("returns single month enrollment correctly", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2025-06-15T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getEnrollmentAnalytics(base.course.id);
+
+      expect(result.totalEnrollments).toBe(1);
+      expect(result.monthlyEnrollments).toHaveLength(1);
+      expect(result.monthlyEnrollments[0]).toEqual({
+        month: "2025-06",
+        count: 1,
+        cumulative: 1,
+      });
+    });
+
+    it("aggregates multiple enrollments in the same month", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-10T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-20T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getEnrollmentAnalytics(base.course.id);
+
+      expect(result.totalEnrollments).toBe(2);
+      expect(result.monthlyEnrollments).toHaveLength(1);
+      expect(result.monthlyEnrollments[0].count).toBe(2);
+    });
+
+    it("returns multiple months in order with cumulative totals", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-03-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-05-15T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getEnrollmentAnalytics(base.course.id);
+
+      expect(result.totalEnrollments).toBe(2);
+      expect(result.monthlyEnrollments).toHaveLength(2);
+      expect(result.monthlyEnrollments[0]).toEqual({
+        month: "2025-03",
+        count: 1,
+        cumulative: 1,
+      });
+      expect(result.monthlyEnrollments[1]).toEqual({
+        month: "2025-05",
+        count: 1,
+        cumulative: 2,
+      });
+    });
+
+    it("filters by date range", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-01-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-15T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getEnrollmentAnalytics(base.course.id, {
+        start: "2025-05",
+        end: "2025-08",
+      });
+
+      expect(result.totalEnrollments).toBe(1);
+      expect(result.monthlyEnrollments).toHaveLength(1);
+      expect(result.monthlyEnrollments[0].month).toBe("2025-06");
+    });
+
+    it("does not include enrollments from other courses", () => {
+      const otherCourse = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course",
+          description: "Another course",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: otherCourse.id,
+            enrolledAt: "2025-06-15T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getEnrollmentAnalytics(base.course.id);
+
+      expect(result.totalEnrollments).toBe(1);
+    });
+  });
+
+  describe("getCompletionAnalytics", () => {
+    it("returns zero values when there are no enrollments", () => {
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.completionRate).toBe(0);
+      expect(result.totalCompleted).toBe(0);
+      expect(result.totalEnrolled).toBe(0);
+      expect(result.monthlyCompletions).toHaveLength(0);
+    });
+
+    it("returns 0% when no one has completed", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2025-06-15T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.completionRate).toBe(0);
+      expect(result.totalCompleted).toBe(0);
+      expect(result.totalEnrolled).toBe(1);
+      expect(result.monthlyCompletions).toHaveLength(0);
+    });
+
+    it("returns 100% when everyone has completed", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2025-06-01T10:00:00.000Z",
+          completedAt: "2025-06-20T10:00:00.000Z",
+        })
+        .run();
+
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.completionRate).toBe(100);
+      expect(result.totalCompleted).toBe(1);
+      expect(result.totalEnrolled).toBe(1);
+      expect(result.monthlyCompletions).toHaveLength(1);
+      expect(result.monthlyCompletions[0]).toEqual({
+        month: "2025-06",
+        completions: 1,
+        cumulative: 1,
+      });
+    });
+
+    it("returns correct percentage for partial completion", () => {
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-01T10:00:00.000Z",
+            completedAt: "2025-06-20T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-05T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.completionRate).toBe(50);
+      expect(result.totalCompleted).toBe(1);
+      expect(result.totalEnrolled).toBe(2);
+    });
+
+    it("groups completions by month with cumulative totals", () => {
+      const user2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "User 2",
+          email: "user2@example.com",
+          role: schema.UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-03-01T10:00:00.000Z",
+            completedAt: "2025-04-15T10:00:00.000Z",
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-03-05T10:00:00.000Z",
+            completedAt: "2025-06-10T10:00:00.000Z",
+          },
+          {
+            userId: user2.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-05-01T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.completionRate).toBe(67); // 2/3 = 66.67 rounds to 67
+      expect(result.totalCompleted).toBe(2);
+      expect(result.totalEnrolled).toBe(3);
+      expect(result.monthlyCompletions).toHaveLength(2);
+      expect(result.monthlyCompletions[0]).toEqual({
+        month: "2025-04",
+        completions: 1,
+        cumulative: 1,
+      });
+      expect(result.monthlyCompletions[1]).toEqual({
+        month: "2025-06",
+        completions: 1,
+        cumulative: 2,
+      });
+    });
+
+    it("does not include completions from other courses", () => {
+      const otherCourse = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course",
+          description: "Another course",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-01T10:00:00.000Z",
+            completedAt: "2025-06-20T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: otherCourse.id,
+            enrolledAt: "2025-06-01T10:00:00.000Z",
+            completedAt: "2025-06-25T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getCompletionAnalytics(base.course.id);
+
+      expect(result.totalCompleted).toBe(1);
+      expect(result.totalEnrolled).toBe(1);
     });
   });
 
