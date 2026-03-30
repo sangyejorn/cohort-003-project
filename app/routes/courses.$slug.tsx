@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useSearchParams, useFetcher } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug";
 import {
@@ -13,8 +13,15 @@ import {
   getLessonProgressForCourse,
   getNextIncompleteLesson,
 } from "~/services/progressService";
+import {
+  getCourseRatingStats,
+  getUserCourseRating,
+  upsertRating,
+} from "~/services/ratingService";
 import { getCurrentUserId } from "~/lib/session";
 import { LessonProgressStatus } from "~/db/schema";
+import { z } from "zod";
+import { parseFormData } from "~/lib/validation";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -33,8 +40,10 @@ import {
   Clock,
   Pencil,
   PlayCircle,
+  Star,
   Users,
 } from "lucide-react";
+import { StarRatingDisplay } from "~/components/star-rating";
 import { CourseImage } from "~/components/course-image";
 import { UserAvatar } from "~/components/user-avatar";
 import { data, isRouteErrorResponse } from "react-router";
@@ -67,10 +76,13 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const lessonCount = getLessonCountForCourse(course.id);
   const currentUserId = await getCurrentUserId(request);
 
+  const ratingStats = getCourseRatingStats(course.id);
+
   let enrolled = false;
   let progress = 0;
   let lessonProgressMap: Record<number, string> = {};
   let nextLessonId: number | null = null;
+  let userRating: number | null = null;
 
   if (currentUserId) {
     enrolled = isUserEnrolled(currentUserId, course.id);
@@ -88,6 +100,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
       const nextLesson = getNextIncompleteLesson(currentUserId, course.id);
       nextLessonId = nextLesson?.id ?? null;
+
+      const existingRating = getUserCourseRating(currentUserId, course.id);
+      userRating = existingRating?.rating ?? null;
     }
   }
 
@@ -113,10 +128,40 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+const rateSchema = z.object({
+  intent: z.literal("rate-course"),
+  rating: z.coerce.number().int().min(1).max(5),
+});
+
+export async function action({ params, request }: Route.ActionArgs) {
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    throw data("Sign in required", { status: 401 });
+  }
+
+  const course = getCourseBySlug(params.slug);
+  if (!course) {
+    throw data("Course not found", { status: 404 });
+  }
+
+  if (!isUserEnrolled(currentUserId, course.id)) {
+    throw data("You must be enrolled to rate this course", { status: 403 });
+  }
+
+  const formData = await request.formData();
+  const parsed = parseFormData(formData, rateSchema);
+  if (!parsed.success) {
+    throw data("Invalid rating", { status: 400 });
+  }
+
+  upsertRating(currentUserId, course.id, parsed.data.rating);
+  return { ok: true };
+}
 
 export function HydrateFallback() {
   return (
@@ -181,6 +226,8 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -320,6 +367,11 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
+          <StarRatingDisplay
+            averageRating={ratingStats.averageRating}
+            ratingCount={ratingStats.ratingCount}
+            size="md"
+          />
         </div>
       </div>
 
@@ -413,6 +465,10 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
                       Buy More Seats
                     </Button>
                   </Link>
+                  <RatingPicker
+                    courseSlug={course.slug}
+                    userRating={userRating}
+                  />
                 </>
               ) : (
                 enrollButton
@@ -445,6 +501,57 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
             </CardContent>
           </Card>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function RatingPicker({
+  courseSlug,
+  userRating,
+}: {
+  courseSlug: string;
+  userRating: number | null;
+}) {
+  const fetcher = useFetcher();
+  const optimisticRating = fetcher.formData
+    ? Number(fetcher.formData.get("rating"))
+    : userRating;
+
+  return (
+    <div className="border-t pt-4">
+      <p className="mb-2 text-sm font-medium">Rate this course</p>
+      <div className="flex items-center gap-1">
+        {Array.from({ length: 5 }, (_, i) => {
+          const starValue = i + 1;
+          return (
+            <fetcher.Form
+              key={starValue}
+              method="post"
+              action={`/courses/${courseSlug}`}
+            >
+              <input type="hidden" name="intent" value="rate-course" />
+              <input type="hidden" name="rating" value={starValue} />
+              <button
+                type="submit"
+                className="rounded p-0.5 transition-colors hover:text-amber-400"
+              >
+                <Star
+                  className={`size-5 ${
+                    optimisticRating !== null && starValue <= optimisticRating
+                      ? "fill-amber-400 text-amber-400"
+                      : "text-muted-foreground/40"
+                  }`}
+                />
+              </button>
+            </fetcher.Form>
+          );
+        })}
+        {optimisticRating !== null && (
+          <span className="ml-2 text-xs text-muted-foreground">
+            Your rating: {optimisticRating}/5
+          </span>
+        )}
       </div>
     </div>
   );

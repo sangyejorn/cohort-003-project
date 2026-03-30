@@ -7,6 +7,8 @@ import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card"
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, BookOpen, CheckCircle2, GraduationCap, PlayCircle } from "lucide-react";
+import { StarRatingDisplay } from "~/components/star-rating";
+import { getCourseRatingStatsForCourses } from "~/services/ratingService";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
 
@@ -28,6 +30,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const enrolledCourses = getUserEnrolledCourses(currentUserId);
 
+  const enrolledCourseIds = enrolledCourses.map((e) => e.courseId);
+  const ratingStatsMap = getCourseRatingStatsForCourses(enrolledCourseIds);
+
   const coursesWithProgress = enrolledCourses.map((enrollment) => {
     const progress = calculateProgress(
       currentUserId,
@@ -45,6 +50,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       enrollment.courseId
     );
     const isCompleted = enrollment.completedAt !== null;
+    const stats = ratingStatsMap.get(enrollment.courseId);
 
     return {
       ...enrollment,
@@ -53,6 +59,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       totalLessons,
       nextLessonId: nextLesson?.id ?? null,
       isCompleted,
+      averageRating: stats?.averageRating ?? 0,
+      ratingCount: stats?.ratingCount ?? 0,
     };
   });
 
@@ -175,6 +183,13 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
                           style={{ width: `${course.progress}%` }}
                         />
                       </div>
+                      <div className="mt-2">
+                        <StarRatingDisplay
+                          averageRating={course.averageRating}
+                          ratingCount={course.ratingCount}
+                          size="sm"
+                        />
+                      </div>
                     </CardContent>
                     <CardFooter>
                       {course.nextLessonId ? (
@@ -239,6 +254,13 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
                         <span>
                           Completed — {course.totalLessons} lessons
                         </span>
+                      </div>
+                      <div className="mt-2">
+                        <StarRatingDisplay
+                          averageRating={course.averageRating}
+                          ratingCount={course.ratingCount}
+                          size="sm"
+                        />
                       </div>
                     </CardContent>
                     <CardFooter>
