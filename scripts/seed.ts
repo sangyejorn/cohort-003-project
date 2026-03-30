@@ -45,6 +45,7 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS lesson_comments;
     DROP TABLE IF EXISTS video_watch_events;
     DROP TABLE IF EXISTS quiz_answers;
     DROP TABLE IF EXISTS quiz_attempts;
@@ -1725,6 +1726,96 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log(
     `Created 1 team with Bossy McBossface as admin, 1 team purchase, and ${seededCoupons.length} coupons (2 redeemed, 3 available).`
+  );
+
+  // ─── Lesson Comments ───
+
+  const seededComments = db
+    .insert(schema.lessonComments)
+    .values([
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[0].id,
+        parentId: null,
+        content:
+          "This was a great introduction! I finally understand why TypeScript is worth learning.",
+        createdAt: daysAgo(25),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: instructor1.id,
+        parentId: null,
+        content:
+          "Glad to hear that, Emma! Feel free to ask questions as you work through the exercises.",
+        createdAt: daysAgo(24),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[1].id,
+        parentId: null,
+        content:
+          "Quick question — does TypeScript work well with existing JavaScript projects, or is it better to start fresh?",
+        createdAt: daysAgo(20),
+      },
+      {
+        lessonId: course1LessonIds[2],
+        userId: students[2].id,
+        parentId: null,
+        content:
+          "The hands-on example really helped me understand the compilation step. Thanks!",
+        createdAt: daysAgo(15),
+      },
+      {
+        lessonId: course2LessonIds[0],
+        userId: students[3].id,
+        parentId: null,
+        content:
+          "I'm coming from a frontend background — is REST still the way to go, or should I learn GraphQL first?",
+        createdAt: daysAgo(18),
+      },
+      {
+        lessonId: course2LessonIds[0],
+        userId: instructor2.id,
+        parentId: null,
+        content:
+          "Great question, Liam! REST is still the most widely used approach. I'd recommend mastering REST first, then exploring GraphQL later.",
+        createdAt: daysAgo(17),
+      },
+    ])
+    .returning()
+    .all();
+
+  // Add replies to some comments
+  db.insert(schema.lessonComments)
+    .values([
+      {
+        lessonId: course1LessonIds[0],
+        userId: instructor1.id,
+        parentId: seededComments[2].id, // Reply to James's question
+        content:
+          "TypeScript works great with existing JS projects! You can adopt it incrementally — just rename .js files to .ts and add types gradually.",
+        createdAt: daysAgo(19),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[1].id,
+        parentId: seededComments[2].id, // James's follow-up
+        content: "That's really helpful, thanks Sarah!",
+        createdAt: daysAgo(18),
+      },
+      {
+        lessonId: course2LessonIds[0],
+        userId: students[3].id,
+        parentId: seededComments[5].id, // Reply to Marcus's answer
+        content: "Makes sense, thanks for the guidance!",
+        createdAt: daysAgo(16),
+      },
+    ])
+    .returning()
+    .all();
+
+  console.log(
+    `Created ${seededComments.length + 3} lesson comments (${seededComments.length} top-level, 3 replies).`
   );
 
   console.log("\n✓ Seed complete!");

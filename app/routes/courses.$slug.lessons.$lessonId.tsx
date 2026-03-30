@@ -21,12 +21,21 @@ import {
   calculateWatchProgress,
 } from "~/services/videoTrackingService";
 import {
+  getCommentsForLesson,
+  createComment,
+  createReply,
+  deleteComment,
+  editComment,
+  getCommentById,
+} from "~/services/commentService";
+import {
   getQuizByLessonId,
   getQuizWithQuestions,
   getBestAttempt,
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
-import { LessonProgressStatus } from "~/db/schema";
+import { getUserById } from "~/services/userService";
+import { LessonProgressStatus, UserRole } from "~/db/schema";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import {
@@ -45,8 +54,12 @@ import {
   XCircle,
   Trophy,
   RotateCcw,
+  MessageSquare,
+  Pencil,
+  Reply,
+  Trash2,
 } from "lucide-react";
-import { cn, formatDuration } from "~/lib/utils";
+import { cn, formatDuration, timeAgo } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { YouTubePlayer } from "~/components/youtube-player";
 import { data, isRouteErrorResponse } from "react-router";
@@ -55,6 +68,8 @@ import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess, COUNTRIES } from "~/lib/ppp";
 import { findPurchase } from "~/services/purchaseService";
 import { parseFormData, parseParams } from "~/lib/validation";
+import { UserAvatar } from "~/components/user-avatar";
+import { Textarea } from "~/components/ui/textarea";
 
 const lessonParamsSchema = z.object({
   slug: z.string().min(1),
@@ -133,6 +148,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   }
 
   const currentUserId = await getCurrentUserId(request);
+  let currentUserRole: string | null = null;
+  if (currentUserId) {
+    const currentUser = getUserById(currentUserId);
+    currentUserRole = currentUser?.role ?? null;
+  }
   let enrolled = false;
   let lessonStatus: string | null = null;
   let lastWatchPosition = 0;
@@ -248,11 +268,35 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
+  // Fetch comments for enrolled users and admins
+  let commentThreads: Array<{
+    comment: ReturnType<typeof getCommentsForLesson>[number];
+    replies: ReturnType<typeof getCommentsForLesson>;
+  }> = [];
+
+  if (enrolled || currentUserRole === UserRole.Admin) {
+    const allComments = getCommentsForLesson(lessonId);
+    const topLevel = allComments.filter((c) => c.parentId === null);
+    commentThreads = topLevel.map((c) => ({
+      comment: c,
+      replies: allComments.filter((r) => r.parentId === c.id),
+    }));
+
+    // Hide threads where all comments are deleted
+    commentThreads = commentThreads.filter((t) => {
+      const allDeleted =
+        t.comment.deletedAt !== null &&
+        t.replies.every((r) => r.deletedAt !== null);
+      return !allDeleted;
+    });
+  }
+
   return {
     course: {
       id: courseWithDetails.id,
       title: courseWithDetails.title,
       slug: courseWithDetails.slug,
+      instructorId: courseWithDetails.instructorId,
     },
     curriculum: courseWithDetails.modules.map((m) => ({
       id: m.id,
@@ -281,6 +325,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    commentThreads,
+    currentUserRole,
   };
 }
 
@@ -297,11 +343,89 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("You must be logged in", { status: 401 });
   }
 
+  const user = getUserById(currentUserId);
+
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
+    return { success: true };
+  }
+
+  if (intent === "add-comment") {
+    const content = String(formData.get("content") ?? "").trim();
+    if (!content || content.length > 2000) {
+      throw data("Comment must be 1-2000 characters", { status: 400 });
+    }
+    const enrolled = isUserEnrolled(currentUserId, course.id);
+    if (!enrolled && course.instructorId !== currentUserId && user?.role !== UserRole.Admin) {
+      throw data("You must be enrolled to comment", { status: 403 });
+    }
+    createComment(lessonId, currentUserId, content);
+    return { success: true };
+  }
+
+  if (intent === "add-reply") {
+    const content = String(formData.get("content") ?? "").trim();
+    const parentId = Number(formData.get("parentId"));
+    if (!content || content.length > 2000) {
+      throw data("Reply must be 1-2000 characters", { status: 400 });
+    }
+    if (isNaN(parentId)) {
+      throw data("Invalid parent comment ID", { status: 400 });
+    }
+    const enrolled = isUserEnrolled(currentUserId, course.id);
+    if (!enrolled && course.instructorId !== currentUserId && user?.role !== UserRole.Admin) {
+      throw data("You must be enrolled to reply", { status: 403 });
+    }
+    createReply(lessonId, currentUserId, parentId, content);
+    return { success: true };
+  }
+
+  if (intent === "delete-comment") {
+    const commentId = Number(formData.get("commentId"));
+    if (isNaN(commentId)) {
+      throw data("Invalid comment ID", { status: 400 });
+    }
+    const comment = getCommentById(commentId);
+    if (!comment || comment.lessonId !== lessonId) {
+      throw data("Comment not found", { status: 404 });
+    }
+    const isAuthor = comment.userId === currentUserId;
+    const isInstructor = course.instructorId === currentUserId;
+    const isAdmin = user?.role === UserRole.Admin;
+    if (!isAuthor && !isInstructor && !isAdmin) {
+      throw data("Not authorized to delete this comment", { status: 403 });
+    }
+    deleteComment(commentId);
+    return { success: true };
+  }
+
+  if (intent === "edit-comment") {
+    const commentId = Number(formData.get("commentId"));
+    const content = String(formData.get("content") ?? "").trim();
+    if (isNaN(commentId)) {
+      throw data("Invalid comment ID", { status: 400 });
+    }
+    if (!content || content.length > 2000) {
+      throw data("Comment must be 1-2000 characters", { status: 400 });
+    }
+    const comment = getCommentById(commentId);
+    if (!comment || comment.lessonId !== lessonId) {
+      throw data("Comment not found", { status: 404 });
+    }
+    if (comment.deletedAt) {
+      throw data("Cannot edit a deleted comment", { status: 400 });
+    }
+    if (comment.userId !== currentUserId) {
+      throw data("Only the author can edit this comment", { status: 403 });
+    }
+    const createdAt = new Date(comment.createdAt).getTime();
+    if (Date.now() - createdAt >= 60 * 60 * 1000) {
+      throw data("Edit window has expired", { status: 403 });
+    }
+    editComment(commentId, content);
     return { success: true };
   }
 
@@ -382,6 +506,8 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    commentThreads,
+    currentUserRole,
   } = loaderData;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
@@ -592,6 +718,17 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
             </div>
           )}
 
+          {/* Discussion Section */}
+          {(enrolled || currentUserRole === UserRole.Admin) &&
+            currentUserId && (
+              <CommentSection
+                commentThreads={commentThreads}
+                courseInstructorId={course.instructorId}
+                currentUserId={currentUserId}
+                currentUserRole={currentUserRole}
+              />
+            )}
+
           {/* Prev/Next Navigation */}
           <div className="flex items-center justify-between border-t pt-6">
             {prevLesson ? (
@@ -762,6 +899,412 @@ function CurriculumSidebar({
         </nav>
       </div>
     </aside>
+  );
+}
+
+type CommentData = {
+  id: number;
+  lessonId: number;
+  userId: number;
+  parentId: number | null;
+  content: string;
+  createdAt: string;
+  deletedAt: string | null;
+  updatedAt: string | null;
+  authorName: string;
+  authorAvatarUrl: string | null;
+  authorRole: string;
+};
+
+type CommentThread = {
+  comment: CommentData;
+  replies: CommentData[];
+};
+
+function CommentSection({
+  commentThreads,
+  courseInstructorId,
+  currentUserId,
+  currentUserRole,
+}: {
+  commentThreads: CommentThread[];
+  courseInstructorId: number;
+  currentUserId: number;
+  currentUserRole: string | null;
+}) {
+  const commentFetcher = useFetcher({ key: "add-comment" });
+  const isSubmitting = commentFetcher.state !== "idle";
+  const totalCount = commentThreads.reduce(
+    (sum, t) => sum + 1 + t.replies.length,
+    0
+  );
+
+  useEffect(() => {
+    if (commentFetcher.data?.success && commentFetcher.state === "idle") {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[name="new-comment-content"]'
+      );
+      if (textarea) textarea.value = "";
+    }
+  }, [commentFetcher.data, commentFetcher.state]);
+
+  return (
+    <div className="mb-8">
+      <div className="mb-4 flex items-center gap-2">
+        <MessageSquare className="size-5 text-primary" />
+        <h2 className="text-xl font-semibold">Discussion</h2>
+        {totalCount > 0 && (
+          <span className="text-sm text-muted-foreground">
+            ({totalCount})
+          </span>
+        )}
+      </div>
+
+      {/* New comment form */}
+      <commentFetcher.Form method="post" className="mb-6">
+        <input type="hidden" name="intent" value="add-comment" />
+        <Textarea
+          name="content"
+          placeholder="Share your thoughts or ask a question..."
+          className="mb-2"
+          rows={3}
+          required
+          maxLength={2000}
+        />
+        <Button type="submit" size="sm" disabled={isSubmitting}>
+          {isSubmitting ? "Posting..." : "Post Comment"}
+        </Button>
+      </commentFetcher.Form>
+
+      {/* Comment threads */}
+      <div className="space-y-6">
+        {commentThreads.map((thread) => (
+          <CommentThreadView
+            key={thread.comment.id}
+            thread={thread}
+            courseInstructorId={courseInstructorId}
+            currentUserId={currentUserId}
+            currentUserRole={currentUserRole}
+          />
+        ))}
+      </div>
+
+      {commentThreads.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          No comments yet. Be the first to start a discussion!
+        </p>
+      )}
+    </div>
+  );
+}
+
+function isWithinEditWindow(createdAt: string): boolean {
+  const created = new Date(createdAt).getTime();
+  return Date.now() - created < 60 * 60 * 1000; // 1 hour
+}
+
+function DeleteCommentButton({ commentId }: { commentId: number }) {
+  const [confirming, setConfirming] = useState(false);
+  const fetcher = useFetcher({ key: `delete-comment-${commentId}` });
+
+  useEffect(() => {
+    if (fetcher.data?.success && fetcher.state === "idle") {
+      toast.success("Comment deleted.");
+    }
+  }, [fetcher.data, fetcher.state]);
+
+  if (confirming) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs">
+        <span className="text-destructive">Delete?</span>
+        <button
+          onClick={() => {
+            fetcher.submit(
+              { intent: "delete-comment", commentId: String(commentId) },
+              { method: "post" }
+            );
+            setConfirming(false);
+          }}
+          className="font-medium text-destructive hover:underline"
+        >
+          Confirm
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          className="text-muted-foreground hover:underline"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setConfirming(true)}
+      className="text-muted-foreground hover:text-destructive"
+      title="Delete comment"
+    >
+      <Trash2 className="size-3" />
+    </button>
+  );
+}
+
+function useEditComment(commentId: number, currentContent: string) {
+  const [editing, setEditing] = useState(false);
+  const [content, setContent] = useState(currentContent);
+  const fetcher = useFetcher({ key: `edit-comment-${commentId}` });
+
+  useEffect(() => {
+    if (fetcher.data?.success && fetcher.state === "idle") {
+      toast.success("Comment updated.");
+      setEditing(false);
+    }
+  }, [fetcher.data, fetcher.state]);
+
+  const startEditing = () => setEditing(true);
+  const cancelEditing = () => {
+    setContent(currentContent);
+    setEditing(false);
+  };
+  const submitEdit = () => {
+    fetcher.submit(
+      {
+        intent: "edit-comment",
+        commentId: String(commentId),
+        content: content.trim(),
+      },
+      { method: "post" }
+    );
+  };
+
+  return { editing, content, setContent, fetcher, startEditing, cancelEditing, submitEdit };
+}
+
+function DeletedCommentPlaceholder() {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 size-8 shrink-0 rounded-full bg-muted" />
+      <div className="flex-1">
+        <p className="text-sm italic text-muted-foreground">[deleted]</p>
+      </div>
+    </div>
+  );
+}
+
+function DeletedReplyPlaceholder() {
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 size-6 shrink-0 rounded-full bg-muted" />
+      <div className="flex-1">
+        <p className="text-sm italic text-muted-foreground">[deleted]</p>
+      </div>
+    </div>
+  );
+}
+
+function CommentView({
+  comment,
+  isReply,
+  courseInstructorId,
+  currentUserId,
+  currentUserRole,
+  onReplyToggle,
+}: {
+  comment: CommentData;
+  isReply: boolean;
+  courseInstructorId: number;
+  currentUserId: number;
+  currentUserRole: string | null;
+  onReplyToggle?: () => void;
+}) {
+  const canDelete =
+    currentUserId === comment.userId ||
+    currentUserId === courseInstructorId ||
+    currentUserRole === "admin";
+  const canEdit =
+    currentUserId === comment.userId &&
+    isWithinEditWindow(comment.createdAt);
+
+  const edit = useEditComment(comment.id, comment.content);
+
+  return (
+    <div className="flex gap-3">
+      <UserAvatar
+        name={comment.authorName}
+        avatarUrl={comment.authorAvatarUrl}
+        className={cn("mt-0.5 shrink-0", isReply ? "size-6" : "size-8")}
+      />
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{comment.authorName}</span>
+          {comment.userId === courseInstructorId && (
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+              Instructor
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {timeAgo(comment.createdAt)}
+          </span>
+          {comment.updatedAt && (
+            <span className="text-xs text-muted-foreground">(edited)</span>
+          )}
+          {canDelete && <DeleteCommentButton commentId={comment.id} />}
+          {canEdit && !edit.editing && (
+            <button
+              onClick={edit.startEditing}
+              className="text-muted-foreground hover:text-foreground"
+              title="Edit comment"
+            >
+              <Pencil className="size-3" />
+            </button>
+          )}
+        </div>
+        {edit.editing ? (
+          <div className="mt-1">
+            <Textarea
+              value={edit.content}
+              onChange={(e) => edit.setContent(e.target.value)}
+              className="mb-2"
+              rows={2}
+              maxLength={2000}
+            />
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  edit.fetcher.state !== "idle" || !edit.content.trim()
+                }
+                onClick={edit.submitEdit}
+              >
+                {edit.fetcher.state !== "idle" ? "Saving..." : "Save"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={edit.cancelEditing}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="mt-1 text-sm whitespace-pre-wrap">
+              {comment.content}
+            </p>
+            {!isReply && onReplyToggle && (
+              <button
+                onClick={onReplyToggle}
+                className="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <Reply className="size-3" />
+                Reply
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentThreadView({
+  thread,
+  courseInstructorId,
+  currentUserId,
+  currentUserRole,
+}: {
+  thread: CommentThread;
+  courseInstructorId: number;
+  currentUserId: number;
+  currentUserRole: string | null;
+}) {
+  const [showReplyForm, setShowReplyForm] = useState(false);
+  const replyFetcher = useFetcher({
+    key: `reply-${thread.comment.id}`,
+  });
+  const isReplying = replyFetcher.state !== "idle";
+
+  useEffect(() => {
+    if (replyFetcher.data?.success && replyFetcher.state === "idle") {
+      setShowReplyForm(false);
+    }
+  }, [replyFetcher.data, replyFetcher.state]);
+
+  return (
+    <div>
+      {/* Top-level comment */}
+      {thread.comment.deletedAt ? (
+        <DeletedCommentPlaceholder />
+      ) : (
+        <CommentView
+          comment={thread.comment}
+          isReply={false}
+          courseInstructorId={courseInstructorId}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          onReplyToggle={() => setShowReplyForm(!showReplyForm)}
+        />
+      )}
+
+      {/* Reply form */}
+      {showReplyForm && !thread.comment.deletedAt && (
+        <div className="ml-10 mt-2 border-l-2 border-border pl-4">
+          <replyFetcher.Form method="post">
+            <input type="hidden" name="intent" value="add-reply" />
+            <input
+              type="hidden"
+              name="parentId"
+              value={thread.comment.id}
+            />
+            <Textarea
+              name="content"
+              placeholder="Write a reply..."
+              className="mb-2"
+              rows={2}
+              required
+              maxLength={2000}
+            />
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" disabled={isReplying}>
+                {isReplying ? "Replying..." : "Reply"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowReplyForm(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </replyFetcher.Form>
+        </div>
+      )}
+
+      {/* Replies */}
+      {thread.replies.length > 0 && (
+        <div className="ml-10 mt-3 space-y-3 border-l-2 border-border pl-4">
+          {thread.replies.map((reply) => (
+            <div key={reply.id}>
+              {reply.deletedAt ? (
+                <DeletedReplyPlaceholder />
+              ) : (
+                <CommentView
+                  comment={reply}
+                  isReply
+                  courseInstructorId={courseInstructorId}
+                  currentUserId={currentUserId}
+                  currentUserRole={currentUserRole}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
