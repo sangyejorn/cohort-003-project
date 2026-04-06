@@ -1,4 +1,4 @@
-import { eq, and, gte, lte, sql, count } from "drizzle-orm";
+import { eq, and, gte, lte, sql, count, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
   purchases,
@@ -12,6 +12,8 @@ import {
   modules,
   lessonProgress,
   LessonProgressStatus,
+  courses,
+  users,
 } from "~/db/schema";
 
 export interface DateRange {
@@ -510,4 +512,91 @@ export function getDropoffAnalytics(courseId: number): DropoffAnalytics {
     totalEnrolled,
     lessons: lessonDropoffs,
   };
+}
+
+// ─── Platform-wide Analytics (Admin) ───
+
+export type TimePeriod = "7d" | "30d" | "12m" | "all";
+
+function getTimePeriodCutoff(period: TimePeriod): string | null {
+  if (period === "all") return null;
+  const now = new Date();
+  switch (period) {
+    case "7d": {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return d.toISOString();
+    }
+    case "30d": {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 30);
+      return d.toISOString();
+    }
+    case "12m": {
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() - 1);
+      return d.toISOString();
+    }
+  }
+}
+
+export function getPlatformRevenue(period: TimePeriod = "30d"): number {
+  const cutoff = getTimePeriodCutoff(period);
+  const conditions = cutoff ? [gte(purchases.createdAt, cutoff)] : [];
+
+  const result = db
+    .select({
+      total: sql<number>`coalesce(sum(${purchases.pricePaid}), 0)`.as("total"),
+    })
+    .from(purchases)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .get();
+
+  return result?.total ?? 0;
+}
+
+export function getPlatformEnrollments(period: TimePeriod = "30d"): number {
+  const cutoff = getTimePeriodCutoff(period);
+  const conditions = cutoff ? [gte(enrollments.enrolledAt, cutoff)] : [];
+
+  const result = db
+    .select({ total: count().as("total") })
+    .from(enrollments)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .get();
+
+  return result?.total ?? 0;
+}
+
+export interface TopEarningCourse {
+  courseId: number;
+  courseTitle: string;
+  revenue: number; // in cents
+}
+
+export function getTopEarningCourse(
+  period: TimePeriod = "30d"
+): TopEarningCourse | null {
+  const cutoff = getTimePeriodCutoff(period);
+  const conditions = cutoff ? [gte(purchases.createdAt, cutoff)] : [];
+
+  const result = db
+    .select({
+      courseId: courses.id,
+      courseTitle: courses.title,
+      revenue: sql<number>`coalesce(sum(${purchases.pricePaid}), 0)`.as(
+        "revenue"
+      ),
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .groupBy(courses.id)
+    .orderBy(desc(sql`sum(${purchases.pricePaid})`))
+    .limit(1)
+    .get();
+
+  if (!result || result.revenue === 0) return null;
+
+  return result;
 }

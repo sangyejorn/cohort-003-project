@@ -19,6 +19,9 @@ import {
   getCompletionRate,
   getQuizAnalytics,
   getDropoffAnalytics,
+  getPlatformRevenue,
+  getPlatformEnrollments,
+  getTopEarningCourse,
 } from "./analyticsService";
 
 describe("analyticsService", () => {
@@ -1296,6 +1299,277 @@ describe("analyticsService", () => {
       expect(result.lessons.every((l) => l.moduleTitle !== "Other Module")).toBe(
         true
       );
+    });
+  });
+
+  // ─── Platform-wide Analytics (Admin) ───
+
+  describe("getPlatformRevenue", () => {
+    it("returns 0 when there are no purchases", () => {
+      expect(getPlatformRevenue("all")).toBe(0);
+    });
+
+    it("returns total revenue across all courses", () => {
+      const instructor2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "Instructor 2",
+          email: "inst2@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+
+      const course2 = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Course 2",
+          slug: "course-2",
+          description: "Second course",
+          instructorId: instructor2.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.purchases)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            pricePaid: 5000,
+            createdAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: course2.id,
+            pricePaid: 3000,
+            createdAt: "2025-06-20T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      expect(getPlatformRevenue("all")).toBe(8000);
+    });
+
+    it("filters by time period", () => {
+      const now = new Date();
+      const recent = new Date(now);
+      recent.setDate(recent.getDate() - 5);
+      const old = new Date(now);
+      old.setDate(old.getDate() - 60);
+
+      testDb
+        .insert(schema.purchases)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            pricePaid: 2000,
+            createdAt: recent.toISOString(),
+          },
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            pricePaid: 3000,
+            createdAt: old.toISOString(),
+          },
+        ])
+        .run();
+
+      expect(getPlatformRevenue("7d")).toBe(2000);
+      expect(getPlatformRevenue("30d")).toBe(2000);
+      expect(getPlatformRevenue("all")).toBe(5000);
+    });
+  });
+
+  describe("getPlatformEnrollments", () => {
+    it("returns 0 when there are no enrollments", () => {
+      expect(getPlatformEnrollments("all")).toBe(0);
+    });
+
+    it("returns total enrollments across all courses", () => {
+      const instructor2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "Instructor 2",
+          email: "inst2@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+
+      const course2 = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Course 2",
+          slug: "course-2",
+          description: "Second course",
+          instructorId: instructor2.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: course2.id,
+            enrolledAt: "2025-06-20T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      expect(getPlatformEnrollments("all")).toBe(2);
+    });
+
+    it("filters by time period", () => {
+      const now = new Date();
+      const recent = new Date(now);
+      recent.setDate(recent.getDate() - 3);
+      const old = new Date(now);
+      old.setDate(old.getDate() - 45);
+
+      testDb
+        .insert(schema.enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: recent.toISOString(),
+          },
+          {
+            userId: base.instructor.id,
+            courseId: base.course.id,
+            enrolledAt: old.toISOString(),
+          },
+        ])
+        .run();
+
+      expect(getPlatformEnrollments("7d")).toBe(1);
+      expect(getPlatformEnrollments("all")).toBe(2);
+    });
+  });
+
+  describe("getTopEarningCourse", () => {
+    it("returns null when there are no purchases", () => {
+      expect(getTopEarningCourse("all")).toBeNull();
+    });
+
+    it("returns the course with the highest revenue", () => {
+      const instructor2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "Instructor 2",
+          email: "inst2@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+
+      const course2 = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Top Earner",
+          slug: "top-earner",
+          description: "Top course",
+          instructorId: instructor2.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.purchases)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            pricePaid: 2000,
+            createdAt: "2025-06-15T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: course2.id,
+            pricePaid: 9000,
+            createdAt: "2025-06-20T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      const result = getTopEarningCourse("all");
+      expect(result).not.toBeNull();
+      expect(result!.courseId).toBe(course2.id);
+      expect(result!.courseTitle).toBe("Top Earner");
+      expect(result!.revenue).toBe(9000);
+    });
+
+    it("respects time period filter", () => {
+      const now = new Date();
+      const recent = new Date(now);
+      recent.setDate(recent.getDate() - 3);
+      const old = new Date(now);
+      old.setDate(old.getDate() - 60);
+
+      const instructor2 = testDb
+        .insert(schema.users)
+        .values({
+          name: "Instructor 2",
+          email: "inst2@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+
+      const course2 = testDb
+        .insert(schema.courses)
+        .values({
+          title: "Old Earner",
+          slug: "old-earner",
+          description: "Old course",
+          instructorId: instructor2.id,
+          categoryId: base.category.id,
+          status: schema.CourseStatus.Published,
+        })
+        .returning()
+        .get();
+
+      testDb
+        .insert(schema.purchases)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            pricePaid: 1000,
+            createdAt: recent.toISOString(),
+          },
+          {
+            userId: base.user.id,
+            courseId: course2.id,
+            pricePaid: 9000,
+            createdAt: old.toISOString(),
+          },
+        ])
+        .run();
+
+      const recentResult = getTopEarningCourse("7d");
+      expect(recentResult).not.toBeNull();
+      expect(recentResult!.courseId).toBe(base.course.id);
+
+      const allResult = getTopEarningCourse("all");
+      expect(allResult).not.toBeNull();
+      expect(allResult!.courseId).toBe(course2.id);
     });
   });
 });
